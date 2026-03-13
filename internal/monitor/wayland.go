@@ -1,0 +1,169 @@
+package monitor
+
+import (
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+type MonitorInfo struct {
+	Connector string
+	X         int
+	Y         int
+	Width     int
+	Height    int
+	Primary   bool
+}
+
+// ListMonitors queries Mutter DisplayConfig via gdbus for monitor layout.
+func ListMonitors() ([]MonitorInfo, error) {
+	out, err := exec.Command("gdbus", "call",
+		"--session",
+		"--dest", "org.gnome.Mutter.DisplayConfig",
+		"--object-path", "/org/gnome/Mutter/DisplayConfig",
+		"--method", "org.gnome.Mutter.DisplayConfig.GetCurrentState",
+	).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("querying display config: %w\n%s", err, string(out))
+	}
+	return parseDisplayConfig(string(out))
+}
+
+// parseDisplayConfig extracts monitor info from Mutter's GetCurrentState output.
+// The logical monitors section looks like: [(x, y, scale, transform, primary, [connectors], {}), ...]
+func parseDisplayConfig(output string) ([]MonitorInfo, error) {
+	// Find the logical monitors array - it's the third top-level element
+	// Format: (serial, [physical_monitors], [logical_monitors], {properties})
+	// Each logical monitor: (x, y, scale, transform, primary, [(connector, vendor, product, serial)], {})
+
+	var monitors []MonitorInfo
+
+	// Find logical monitors section by looking for the pattern after physical monitors
+	// Logical monitors start after "], [(" and each is "(x, y, scale, transform, primary/false, [(...)]"
+	// Simple approach: find all "(x, y, scale, transform, true/false, [(" patterns
+
+	// Split by logical monitor entries - they contain "true" or "false" for primary flag
+	// and are followed by connector info in [(connector, ...)]
+	idx := 0
+	for {
+		// Find next logical monitor entry: a number pair followed by scale and primary flag
+		pos := strings.Index(output[idx:], "true, [(")
+		posFalse := strings.Index(output[idx:], "false, [(")
+
+		var nextPos int
+		var isPrimary bool
+		if pos >= 0 && (posFalse < 0 || pos < posFalse) {
+			nextPos = idx + pos
+			isPrimary = true
+		} else if posFalse >= 0 {
+			nextPos = idx + posFalse
+			isPrimary = false
+		} else {
+			break
+		}
+
+		// Extract connector from [('DP-0', ...)]
+		connStart := strings.Index(output[nextPos:], "[('")
+		if connStart < 0 {
+			connStart = strings.Index(output[nextPos:], "[(\"")
+		}
+		if connStart >= 0 {
+			connStart += nextPos + 3 // skip [('
+			connEnd := strings.IndexAny(output[connStart:], "'\"")
+			if connEnd >= 0 {
+				connector := output[connStart : connStart+connEnd]
+
+				// Walk backwards from the primary flag to find x, y
+				// Pattern before "true/false": "(x, y, scale, transform, "
+				prefix := output[:nextPos]
+				// Find the opening paren for this logical monitor
+				parenPos := strings.LastIndex(prefix, "(")
+				if parenPos >= 0 {
+					between := output[parenPos+1 : nextPos]
+					parts := strings.Split(between, ",")
+					if len(parts) >= 4 {
+						x, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+						y, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+						monitors = append(monitors, MonitorInfo{
+							Connector: connector,
+							X:         x,
+							Y:         y,
+							Primary:   isPrimary,
+						})
+					}
+				}
+			}
+		}
+
+		if isPrimary {
+			idx = nextPos + 8 // skip "true, [("
+		} else {
+			idx = nextPos + 9 // skip "false, [("
+		}
+	}
+
+	if len(monitors) == 0 {
+		return nil, fmt.Errorf("no monitors found in display config")
+	}
+	return monitors, nil
+}
+
+// GetMonitor returns the MonitorInfo for a given connector name.
+func GetMonitor(connector string) (MonitorInfo, error) {
+	monitors, err := ListMonitors()
+	if err != nil {
+		return MonitorInfo{}, err
+	}
+	for _, m := range monitors {
+		if m.Connector == connector {
+			return m, nil
+		}
+	}
+	return MonitorInfo{}, fmt.Errorf("monitor %q not found", connector)
+}
+
+// MoveWindow moves an X11 window to a specific position using xdotool.
+func MoveWindow(xWindowID int, x, y int) error {
+	out, err := exec.Command("xdotool", "windowmove", strconv.Itoa(xWindowID),
+		strconv.Itoa(x), strconv.Itoa(y)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("xdotool windowmove: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
+// ActivateWindow raises and focuses an X11 window using xdotool.
+func ActivateWindow(xWindowID int) error {
+	out, err := exec.Command("xdotool", "windowactivate", strconv.Itoa(xWindowID)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("xdotool windowactivate: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
+// GetWindowPosition returns the current x,y position of a window.
+func GetWindowPosition(xWindowID int) (int, int, error) {
+	out, err := exec.Command("xdotool", "getwindowgeometry", "--shell", strconv.Itoa(xWindowID)).CombinedOutput()
+	if err != nil {
+		return 0, 0, fmt.Errorf("xdotool getwindowgeometry: %w\n%s", err, string(out))
+	}
+	var x, y int
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "X=") {
+			x, _ = strconv.Atoi(strings.TrimPrefix(line, "X="))
+		} else if strings.HasPrefix(line, "Y=") {
+			y, _ = strconv.Atoi(strings.TrimPrefix(line, "Y="))
+		}
+	}
+	return x, y, nil
+}
+
+// MinimizeWindow minimizes a window (for single-monitor/laptop mode).
+func MinimizeWindow(xWindowID int) error {
+	out, err := exec.Command("xdotool", "windowminimize", strconv.Itoa(xWindowID)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("xdotool windowminimize: %w\n%s", err, string(out))
+	}
+	return nil
+}
