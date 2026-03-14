@@ -225,10 +225,6 @@ func createRemoteWorkspace(cmd *cobra.Command, hostName string) error {
 	if name == "" {
 		return fmt.Errorf("workspace name is required")
 	}
-	if config.WorkspaceExists(name) {
-		return fmt.Errorf("workspace %q already exists", name)
-	}
-
 	defaultDir := ""
 	if host.WorkspaceDir != "" {
 		defaultDir = host.WorkspaceDir + "/" + name
@@ -240,34 +236,23 @@ func createRemoteWorkspace(cmd *cobra.Command, hostName string) error {
 
 	gitURL := prompt("Git repo URL (empty for existing dir)", "")
 
-	// Create local workspace config with Host field
-	ws := config.Workspace{
-		Name:       name,
-		Dir:        dir,
-		Layout:     "default",
-		AutoClaude: true,
-		Host:       hostName,
-	}
-	if err := config.SaveWorkspace(ws); err != nil {
-		return fmt.Errorf("saving local workspace config: %w", err)
-	}
-
-	// Create workspace on remote via SSH
+	// Create workspace on remote only — auto-discovery handles the rest
 	fmt.Printf("Creating workspace on %s...\n", hostName)
+	if gitURL != "" {
+		ssh.EnsureGitHubHostKey(host.SSH)
+	}
 	remoteArgs := fmt.Sprintf("~/.local/bin/ws new --non-interactive --name %s --dir %s", name, dir)
 	if gitURL != "" {
 		remoteArgs += fmt.Sprintf(" --git-url %s", gitURL)
 	}
 	out, err := ssh.Run(host.SSH, remoteArgs)
 	if err != nil {
-		fmt.Printf("Warning: remote workspace creation failed: %v\n", err)
-		fmt.Println("You may need to create it manually on the remote.")
-	} else {
-		fmt.Println(out)
+		return fmt.Errorf("remote workspace creation failed: %w", err)
 	}
+	fmt.Println(out)
 
 	fmt.Printf("\nWorkspace %q created (remote: %s)\n", name, hostName)
-	fmt.Printf("Open it with: ws open %s\n", name)
+	fmt.Printf("Open it with: ws open %s:%s\n", hostName, name)
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -8,8 +9,9 @@ import (
 )
 
 // Run executes a command on the remote host and returns its output.
+// Uses -A for agent forwarding so remote can use local SSH keys.
 func Run(target, command string) (string, error) {
-	cmd := exec.Command("ssh", target, command)
+	cmd := exec.Command("ssh", "-A", target, command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh %s: %w\n%s", target, err, strings.TrimSpace(string(out)))
@@ -23,7 +25,7 @@ func RunWithTimeout(target, command string, timeout time.Duration) (string, erro
 	if secs < 1 {
 		secs = 1
 	}
-	cmd := exec.Command("ssh", "-o", fmt.Sprintf("ConnectTimeout=%d", secs), target, command)
+	cmd := exec.Command("ssh", "-A", "-o", fmt.Sprintf("ConnectTimeout=%d", secs), target, command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh %s: %w\n%s", target, err, strings.TrimSpace(string(out)))
@@ -31,9 +33,16 @@ func RunWithTimeout(target, command string, timeout time.Duration) (string, erro
 	return strings.TrimSpace(string(out)), nil
 }
 
+// EnsureGitHubHostKey adds github.com to known_hosts on the remote if not already present.
+func EnsureGitHubHostKey(target string) error {
+	_, err := Run(target, "ssh-keygen -F github.com >/dev/null 2>&1 || ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null")
+	return err
+}
+
 // InteractiveCommand returns the full SSH command string for sending to kitty via send-text.
+// Ensures ~/.local/bin is in PATH since non-login shells may not source .bashrc.
 func InteractiveCommand(target, command string) string {
-	return fmt.Sprintf("ssh %s -t '%s'\n", target, command)
+	return fmt.Sprintf("ssh -A %s -t 'export PATH=\"$HOME/.local/bin:$PATH\" && %s'\n", target, command)
 }
 
 // CheckConnection verifies SSH connectivity to a host.
@@ -59,6 +68,30 @@ func CheckZellijSession(target, session string) bool {
 		}
 	}
 	return false
+}
+
+// RemoteStatus represents a workspace status returned from a remote ws instance.
+type RemoteStatus struct {
+	Name       string `json:"name"`
+	Dir        string `json:"dir"`
+	Branch     string `json:"branch"`
+	Task       string `json:"task,omitempty"`
+	Active     bool   `json:"active"`
+	Claude     bool   `json:"claude"`
+	ClaudeTime string `json:"claude_cpu_time,omitempty"`
+}
+
+// GetRemoteStatuses queries all workspace statuses from a remote host.
+func GetRemoteStatuses(target string) ([]RemoteStatus, error) {
+	out, err := RunWithTimeout(target, "export PATH=\"$HOME/.local/bin:$PATH\" && ws status 2>/dev/null", 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var statuses []RemoteStatus
+	if err := json.Unmarshal([]byte(out), &statuses); err != nil {
+		return nil, fmt.Errorf("parsing remote status: %w", err)
+	}
+	return statuses, nil
 }
 
 // CopyFile copies a local file to a remote path via scp.

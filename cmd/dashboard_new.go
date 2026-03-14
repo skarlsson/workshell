@@ -350,7 +350,7 @@ func (m newWSModel) handleKey(msg tea.KeyMsg) (newWSModel, tea.Cmd) {
 				m.message = "Name is required"
 				return m, nil
 			}
-			if config.WorkspaceExists(name) {
+			if m.hostName == "" && config.WorkspaceExists(name) {
 				m.message = fmt.Sprintf("Workspace %q already exists", name)
 				return m, nil
 			}
@@ -479,26 +479,16 @@ func (m newWSModel) doRemoteSetup(name, dir, gitURL, hostName string) setupDoneM
 		return setupDoneMsg{err: err}
 	}
 
-	// Save local workspace config with Host field
-	ws := config.Workspace{
-		Name:       name,
-		Dir:        dir,
-		Layout:     "default",
-		AutoClaude: true,
-		Host:       hostName,
+	// Create workspace on remote only — auto-discovery handles the rest
+	if gitURL != "" {
+		ssh.EnsureGitHubHostKey(host.SSH)
 	}
-	if err := config.SaveWorkspace(ws); err != nil {
-		return setupDoneMsg{err: fmt.Errorf("save local config: %w", err)}
-	}
-
-	// Create workspace on remote
 	remoteArgs := fmt.Sprintf("~/.local/bin/ws new --non-interactive --name %s --dir %s", name, dir)
 	if gitURL != "" {
 		remoteArgs += fmt.Sprintf(" --git-url %s", gitURL)
 	}
 	if _, err := ssh.Run(host.SSH, remoteArgs); err != nil {
-		// Non-fatal: local config was saved
-		return setupDoneMsg{err: fmt.Errorf("remote setup: %w (local config saved)", err)}
+		return setupDoneMsg{err: fmt.Errorf("remote setup: %w", err)}
 	}
 
 	return setupDoneMsg{}

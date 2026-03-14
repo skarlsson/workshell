@@ -67,7 +67,10 @@ func getWorkspaceStatus(name, focused string) (WorkspaceStatus, error) {
 	}
 
 	st, _ := state.Load(name)
-	active := st.Active && kitty.IsRunning(st.KittyPID)
+	kittyActive := st.Active && st.KittyPID > 0 && kitty.IsRunning(st.KittyPID)
+	session := zellij.SessionName(name)
+	zellijActive := zellij.SessionExists(session)
+	active := kittyActive || zellijActive
 
 	branch := "-"
 	if !ws.IsRemote() {
@@ -86,19 +89,16 @@ func getWorkspaceStatus(name, focused string) (WorkspaceStatus, error) {
 		Host:    ws.Host,
 	}
 
-	if ws.IsRemote() {
-		// Check if remote zellij session is running but no local kitty
-		session := zellij.SessionName(name)
-		if !active && ws.Host != "" {
-			host, err := config.LoadHost(ws.Host)
-			if err == nil && ssh.CheckZellijSession(host.SSH, session) {
-				s.Detached = true
-			}
+	if ws.IsRemote() && !kittyActive && ws.Host != "" {
+		host, err := config.LoadHost(ws.Host)
+		if err == nil && ssh.CheckZellijSession(host.SSH, session) {
+			s.Detached = true
+			s.Active = true
 		}
 	}
 
 	if active && !ws.IsRemote() {
-		ci := process.GetClaudeInfo(st.ZellijSession)
+		ci := process.GetClaudeInfo(session)
 		s.Claude = ci.Running
 		s.ClaudeCPU = ci.CPUSecs
 		s.ClaudeTime = ci.CPUTime

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/skarlsson/ws-manager/internal/config"
@@ -15,34 +16,62 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// openWorkspace opens a workspace by launching kitty + zellij.
-func openWorkspace(name string) error {
+// parseWorkspaceRef parses "host:name" or just "name".
+// Returns (hostName, wsName). hostName is empty for local workspaces.
+func parseWorkspaceRef(ref string) (string, string) {
+	if i := strings.IndexByte(ref, ':'); i > 0 {
+		return ref[:i], ref[i+1:]
+	}
+	return "", ref
+}
+
+// stateKey returns the state file key for a workspace.
+// For remote: "host--name", for local: "name".
+func stateKey(hostName, wsName string) string {
+	if hostName != "" {
+		return hostName + "_" + wsName
+	}
+	return wsName
+}
+
+// openWorkspace opens a workspace. Accepts "name" (local) or "host:name" (remote).
+// Also supports legacy local configs with Host field.
+func openWorkspace(ref string) error {
+	hostName, wsName := parseWorkspaceRef(ref)
+
+	// If no host in ref, check if local config has Host field (legacy)
+	if hostName == "" {
+		if ws, err := config.LoadWorkspace(wsName); err == nil && ws.IsRemote() {
+			hostName = ws.Host
+		}
+	}
+
+	if hostName != "" {
+		return openRemoteWorkspace(hostName, wsName)
+	}
+
+	return openLocalWorkspace(wsName)
+}
+
+func openLocalWorkspace(name string) error {
 	ws, err := config.LoadWorkspace(name)
 	if err != nil {
 		return fmt.Errorf("workspace %q not found: %w", name, err)
 	}
 
-	if ws.IsRemote() {
-		return openRemoteWorkspace(name, ws)
-	}
-
-	// Check if already active
 	st, _ := state.Load(name)
 	if st.Active && kitty.IsRunning(st.KittyPID) {
 		return fmt.Errorf("workspace %q is already open (PID %d)", name, st.KittyPID)
 	}
 
-	// Generate layout
 	layoutPath, err := zellij.GenerateLayout(ws)
 	if err != nil {
 		return fmt.Errorf("generating layout: %w", err)
 	}
 
-	// Clean up any dead zellij session with the same name
 	session := zellij.SessionName(name)
 	zellij.CleanupSession(session)
 
-	// Launch kitty with branch in title
 	title := fmt.Sprintf("ws: %s", name)
 	if git.IsGitRepo(ws.Dir) {
 		if branch, err := git.CurrentBranch(ws.Dir); err == nil {
@@ -54,7 +83,6 @@ func openWorkspace(name string) error {
 		return fmt.Errorf("launching kitty: %w", err)
 	}
 
-	// Wait for kitty socket to be ready
 	socket := kitty.SocketPath(name)
 	zellijCmd := zellij.LaunchCommand(session, layoutPath, ws.Dir)
 
@@ -67,7 +95,6 @@ func openWorkspace(name string) error {
 		fmt.Println("Start it manually with: zellij --session", session, "--layout", layoutPath)
 	}
 
-	// Save state
 	st = state.WorkspaceState{
 		Name:          name,
 		KittyPID:      pid,
@@ -81,48 +108,62 @@ func openWorkspace(name string) error {
 	return nil
 }
 
-// openRemoteWorkspace opens a remote workspace: local kitty + SSH to remote ws attach.
-func openRemoteWorkspace(name string, ws config.Workspace) error {
-	host, err := config.LoadHost(ws.Host)
+func openRemoteWorkspace(hostName, wsName string) error {
+	host, err := config.LoadHost(hostName)
 	if err != nil {
-		return fmt.Errorf("loading host %q: %w", ws.Host, err)
+		return fmt.Errorf("host %q not found: %w", hostName, err)
 	}
 
-	// Check if local kitty is already running
-	st, _ := state.Load(name)
-	if st.Active && kitty.IsRunning(st.KittyPID) {
-		return fmt.Errorf("workspace %q is already open (PID %d)", name, st.KittyPID)
+	sk := stateKey(hostName, wsName)
+	st, _ := state.Load(sk)
+	if st.Active && st.KittyPID > 0 && kitty.IsRunning(st.KittyPID) {
+		// Already open — focus the window
+		if err := kitty.Activate(sk); err != nil {
+			return fmt.Errorf("workspace %q is already open (PID %d)", wsName, st.KittyPID)
+		}
+		return nil
 	}
 
-	session := zellij.SessionName(name)
+	session := zellij.SessionName(wsName)
 
-	// Launch kitty without --directory (workspace dir is on remote)
-	title := fmt.Sprintf("ws: %s [%s]", name, host.Name)
-	pid, err := kitty.LaunchRemote(name, title)
+	// Query remote for branch info
+	branch := ""
+	statuses, err := ssh.GetRemoteStatuses(host.SSH)
+	if err == nil {
+		for _, rs := range statuses {
+			if rs.Name == wsName {
+				branch = rs.Branch
+				break
+			}
+		}
+	}
+
+	title := fmt.Sprintf("ws: %s [%s]", wsName, hostName)
+	if branch != "" {
+		title = fmt.Sprintf("ws: %s [%s] (%s)", wsName, branch, hostName)
+	}
+	pid, err := kitty.LaunchRemote(sk, title)
 	if err != nil {
 		return fmt.Errorf("launching kitty: %w", err)
 	}
 
-	// Wait for kitty socket
-	socket := kitty.SocketPath(name)
+	socket := kitty.SocketPath(sk)
 	if err := waitForSocket(socket, 5*time.Second); err != nil {
 		fmt.Printf("Warning: kitty socket not ready: %v\n", err)
 	}
 
-	// Send SSH command that runs ws attach on remote
-	sshCmd := ssh.InteractiveCommand(host.SSH, fmt.Sprintf("~/.local/bin/ws attach %s", name))
+	sshCmd := ssh.InteractiveCommand(host.SSH, fmt.Sprintf("~/.local/bin/ws attach %s", wsName))
 	if err := kitty.SendText(socket, sshCmd); err != nil {
 		fmt.Printf("Warning: could not send SSH command: %v\n", err)
 	}
 
-	// Save state
 	st = state.WorkspaceState{
-		Name:          name,
+		Name:          sk,
 		KittyPID:      pid,
 		ZellijSession: session,
 		Active:        true,
 		Remote:        true,
-		Host:          ws.Host,
+		Host:          hostName,
 	}
 	if err := state.Save(st); err != nil {
 		return fmt.Errorf("saving state: %w", err)
@@ -136,12 +177,19 @@ var openCmd = &cobra.Command{
 	Short: "Open a workspace in a new kitty window with zellij",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-		if err := openWorkspace(name); err != nil {
+		ref := args[0]
+		if err := openWorkspace(ref); err != nil {
 			return err
 		}
-		st, _ := state.Load(name)
-		fmt.Printf("Opened workspace %q (kitty PID %d, zellij session %q)\n", name, st.KittyPID, st.ZellijSession)
+		hostName, wsName := parseWorkspaceRef(ref)
+		if hostName == "" {
+			if ws, err := config.LoadWorkspace(wsName); err == nil && ws.IsRemote() {
+				hostName = ws.Host
+			}
+		}
+		sk := stateKey(hostName, wsName)
+		st, _ := state.Load(sk)
+		fmt.Printf("Opened workspace %q (kitty PID %d, zellij session %q)\n", ref, st.KittyPID, st.ZellijSession)
 		return nil
 	},
 }

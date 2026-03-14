@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/skarlsson/ws-manager/internal/config"
@@ -41,17 +43,39 @@ var attachCmd = &cobra.Command{
 			return fmt.Errorf("changing to workspace dir %s: %w", ws.Dir, err)
 		}
 
+		// Ensure ~/.local/bin is in PATH so zellij panes inherit it
+		env := ensureLocalBinInPath()
+
 		if zellij.SessionExists(session) {
 			// Attach to existing session
 			fmt.Printf("Attaching to existing session %q...\n", session)
-			return syscall.Exec(zellijBin, []string{"zellij", "attach", session}, os.Environ())
+			return syscall.Exec(zellijBin, []string{"zellij", "attach", session}, env)
 		}
 
 		// Clean up any dead session with the same name, then create new
 		zellij.CleanupSession(session)
 		fmt.Printf("Creating session %q with layout...\n", session)
-		return syscall.Exec(zellijBin, []string{"zellij", "-s", session, "-n", layoutPath}, os.Environ())
+		return syscall.Exec(zellijBin, []string{"zellij", "-s", session, "-n", layoutPath}, env)
 	},
+}
+
+// ensureLocalBinInPath returns os.Environ() with ~/.local/bin prepended to PATH if missing.
+func ensureLocalBinInPath() []string {
+	home, _ := os.UserHomeDir()
+	localBin := filepath.Join(home, ".local", "bin")
+
+	env := os.Environ()
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			path := e[5:]
+			if !strings.Contains(path, localBin) {
+				env[i] = "PATH=" + localBin + ":" + path
+			}
+			return env
+		}
+	}
+	// No PATH at all — set one
+	return append(env, "PATH="+localBin+":/usr/local/bin:/usr/bin:/bin")
 }
 
 func findZellij() (string, error) {

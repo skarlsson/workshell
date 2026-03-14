@@ -35,69 +35,131 @@ var listCmd = &cobra.Command{
 			return fmt.Errorf("listing workspaces: %w", err)
 		}
 
-		if len(workspaces) == 0 {
+		// Fetch remote statuses per host
+		hosts, _ := config.LoadHosts()
+		type hostResult struct {
+			hostName string
+			statuses []ssh.RemoteStatus
+		}
+		remoteResults := make([]hostResult, len(hosts))
+		var wg sync.WaitGroup
+		for i, h := range hosts {
+			wg.Add(1)
+			go func(idx int, host config.HostConfig) {
+				defer wg.Done()
+				statuses, _ := ssh.GetRemoteStatuses(host.SSH)
+				remoteResults[idx] = hostResult{hostName: host.Name, statuses: statuses}
+			}(i, h)
+		}
+		wg.Wait()
+
+		// Build map: "host:name" -> RemoteStatus
+		remoteMap := make(map[string]*ssh.RemoteStatus)
+		for i := range remoteResults {
+			for j := range remoteResults[i].statuses {
+				rs := &remoteResults[i].statuses[j]
+				key := remoteResults[i].hostName + ":" + rs.Name
+				remoteMap[key] = rs
+			}
+		}
+
+		hasRemote := len(hosts) > 0
+		seenRemote := make(map[string]bool)
+		var entries []listEntry
+
+		var wg2 sync.WaitGroup
+		for _, ws := range workspaces {
+			e := listEntry{
+				ws:   ws,
+				task: ws.CurrentTask,
+				host: ws.Host,
+			}
+			if e.task == "" {
+				e.task = "-"
+			}
+
+			if ws.IsRemote() {
+				seenRemote[ws.Host+":"+ws.Name] = true
+				if rs, ok := remoteMap[ws.Host+":"+ws.Name]; ok {
+					e.branch = rs.Branch
+					if e.branch == "" {
+						e.branch = "-"
+					}
+					sk := ws.Host + "_" + ws.Name
+					st, _ := state.Load(sk)
+					kittyUp := st.KittyPID > 0 && kitty.IsRunning(st.KittyPID)
+					if rs.Active && kittyUp {
+						e.status = "active"
+					} else if rs.Active {
+						e.status = "detached"
+					} else {
+						e.status = "inactive"
+					}
+					e.claude = "-"
+				} else {
+					e.branch = "-"
+					e.status = "inactive"
+					e.claude = "-"
+				}
+			} else {
+				if branch, err := git.CurrentBranch(ws.Dir); err == nil {
+					e.branch = branch
+				} else {
+					e.branch = "-"
+				}
+				session := zellij.SessionName(ws.Name)
+				if zellij.SessionExists(session) {
+					e.status = "active"
+					idx := len(entries)
+					entries = append(entries, e)
+					wg2.Add(1)
+					go func(i int, s string) {
+						defer wg2.Done()
+						entries[i].claude = process.GetClaudeInfo(s).Pretty()
+					}(idx, session)
+					continue
+				}
+				e.status = "inactive"
+				e.claude = "-"
+			}
+
+			entries = append(entries, e)
+		}
+
+		// Auto-discover remote workspaces
+		for i := range remoteResults {
+			hr := remoteResults[i]
+			for j := range hr.statuses {
+				rs := &hr.statuses[j]
+				key := hr.hostName + ":" + rs.Name
+				if seenRemote[key] {
+					continue
+				}
+				e := listEntry{
+					ws:     config.Workspace{Name: rs.Name, Dir: rs.Dir, Host: hr.hostName},
+					branch: rs.Branch,
+					task:   "-",
+					host:   hr.hostName,
+					claude: "-",
+				}
+				if e.branch == "" {
+					e.branch = "-"
+				}
+				if rs.Active {
+					e.status = "detached"
+				} else {
+					e.status = "inactive"
+				}
+				entries = append(entries, e)
+			}
+		}
+
+		wg2.Wait()
+
+		if len(entries) == 0 {
 			fmt.Println("No workspaces configured. Use 'ws new' to create one.")
 			return nil
 		}
-
-		entries := make([]listEntry, len(workspaces))
-		var wg sync.WaitGroup
-		hasRemote := false
-
-		for i, ws := range workspaces {
-			entries[i].ws = ws
-			entries[i].task = ws.CurrentTask
-			if entries[i].task == "" {
-				entries[i].task = "-"
-			}
-			entries[i].host = ws.Host
-			if ws.Host != "" {
-				hasRemote = true
-			}
-
-			if !ws.IsRemote() {
-				if branch, err := git.CurrentBranch(ws.Dir); err == nil {
-					entries[i].branch = branch
-				} else {
-					entries[i].branch = "-"
-				}
-			} else {
-				entries[i].branch = "-"
-			}
-
-			st, _ := state.Load(ws.Name)
-			if st.Active && kitty.IsRunning(st.KittyPID) {
-				entries[i].status = "active"
-				if !ws.IsRemote() {
-					wg.Add(1)
-					go func(idx int, session string) {
-						defer wg.Done()
-						entries[idx].claude = process.GetClaudeInfo(session).Pretty()
-					}(i, st.ZellijSession)
-				} else {
-					entries[i].claude = "-"
-				}
-			} else if ws.IsRemote() {
-				// Check for detached remote session
-				entries[i].claude = "-"
-				wg.Add(1)
-				go func(idx int, w config.Workspace) {
-					defer wg.Done()
-					session := zellij.SessionName(w.Name)
-					host, err := config.LoadHost(w.Host)
-					if err == nil && ssh.CheckZellijSession(host.SSH, session) {
-						entries[idx].status = "detached"
-					} else {
-						entries[idx].status = "inactive"
-					}
-				}(i, ws)
-			} else {
-				entries[i].status = "inactive"
-				entries[i].claude = "-"
-			}
-		}
-
-		wg.Wait()
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		if hasRemote {

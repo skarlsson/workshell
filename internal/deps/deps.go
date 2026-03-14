@@ -30,6 +30,7 @@ var tools = []toolDef{
 	{"zellij", true, "terminal multiplexer", true},
 	{"claude", true, "AI coding assistant", true},
 	{"git", true, "branch/task management", true},
+	{"kitty-terminfo", true, "terminfo for xterm-kitty", true},
 	{"xdotool", false, "window move/focus/minimize", false},
 	{"xprop", false, "window title updates", false},
 	{"gdbus", false, "monitor detection (GNOME/Mutter)", false},
@@ -57,13 +58,25 @@ func checkTools(remoteOnly bool) []ToolStatus {
 			Note:     t.Note,
 			Remote:   t.Remote,
 		}
-		if path, err := exec.LookPath(t.Name); err == nil {
+		if t.Name == "kitty-terminfo" {
+			ts.Found = hasKittyTerminfo()
+			if ts.Found {
+				ts.Path = "(terminfo db)"
+			}
+		} else if path, err := exec.LookPath(t.Name); err == nil {
 			ts.Found = true
 			ts.Path = path
 		}
 		results = append(results, ts)
 	}
 	return results
+}
+
+func hasKittyTerminfo() bool {
+	cmd := exec.Command("infocmp", "xterm-kitty")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 // CheckRequired verifies that all required tools (kitty, zellij, git) are in PATH.
@@ -83,8 +96,11 @@ func CheckRequired() error {
 	return nil
 }
 
-// HasTool checks if a single tool is available in PATH.
+// HasTool checks if a single tool is available in PATH (or installed for special cases).
 func HasTool(name string) bool {
+	if name == "kitty-terminfo" {
+		return hasKittyTerminfo()
+	}
 	_, err := exec.LookPath(name)
 	return err == nil
 }
@@ -100,6 +116,8 @@ func Install(name string) error {
 		return installZellij()
 	case "claude":
 		return installClaude()
+	case "kitty-terminfo":
+		return installKittyTerminfo()
 	default:
 		return fmt.Errorf("%s: no auto-install available — install via your package manager", name)
 	}
@@ -139,6 +157,18 @@ func installClaude() error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("installing claude: %w", err)
+	}
+	return nil
+}
+
+func installKittyTerminfo() error {
+	// Download kitty's terminfo and compile it into ~/.terminfo
+	cmd := exec.Command("bash", "-c",
+		`mkdir -p ~/.terminfo && curl -fsSL https://raw.githubusercontent.com/kovidgoyal/kitty/master/terminfo/kitty.terminfo | tic -x -o ~/.terminfo /dev/stdin`)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("installing kitty terminfo: %w", err)
 	}
 	return nil
 }

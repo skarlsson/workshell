@@ -11,19 +11,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// closeWorkspace closes a workspace by killing kitty + zellij and removing state.
+// closeWorkspace closes a workspace. Accepts "name" (local) or "host:name" (remote).
 // For remote workspaces, only the local kitty is killed by default (zellij persists on remote).
-func closeWorkspace(name string) error {
-	st, err := state.Load(name)
+func closeWorkspace(ref string) error {
+	hostName, wsName := parseWorkspaceRef(ref)
+
+	// If no host in ref, check if local config has Host field (legacy)
+	if hostName == "" {
+		if ws, err := config.LoadWorkspace(wsName); err == nil && ws.IsRemote() {
+			hostName = ws.Host
+		}
+	}
+
+	sk := stateKey(hostName, wsName)
+	st, err := state.Load(sk)
 	if err != nil {
-		return fmt.Errorf("loading state for %q: %w", name, err)
+		return fmt.Errorf("loading state for %q: %w", ref, err)
 	}
 	if !st.Active {
-		return fmt.Errorf("workspace %q is not open", name)
+		return fmt.Errorf("workspace %q is not open", ref)
 	}
 
 	if st.Remote {
-		return closeRemoteWorkspace(name, st, false)
+		return closeRemoteWorkspace(sk, st, false)
 	}
 
 	if st.ZellijSession != "" {
@@ -38,7 +48,7 @@ func closeWorkspace(name string) error {
 		}
 	}
 
-	if err := state.Remove(name); err != nil {
+	if err := state.Remove(sk); err != nil {
 		fmt.Printf("Warning: could not remove state file: %v\n", err)
 	}
 
@@ -47,7 +57,7 @@ func closeWorkspace(name string) error {
 
 // closeRemoteWorkspace closes a remote workspace.
 // Only kills local kitty by default. If kill=true, also kills the remote zellij session.
-func closeRemoteWorkspace(name string, st state.WorkspaceState, kill bool) error {
+func closeRemoteWorkspace(sk string, st state.WorkspaceState, kill bool) error {
 	// Kill local kitty
 	if st.KittyPID > 0 {
 		if err := kitty.KillProcess(st.KittyPID); err != nil {
@@ -65,7 +75,7 @@ func closeRemoteWorkspace(name string, st state.WorkspaceState, kill bool) error
 		}
 	}
 
-	if err := state.Remove(name); err != nil {
+	if err := state.Remove(sk); err != nil {
 		fmt.Printf("Warning: could not remove state file: %v\n", err)
 	}
 
@@ -77,32 +87,40 @@ var closeCmd = &cobra.Command{
 	Short: "Close a workspace session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		ref := args[0]
 		kill, _ := cmd.Flags().GetBool("kill")
 
-		st, err := state.Load(name)
+		hostName, wsName := parseWorkspaceRef(ref)
+		if hostName == "" {
+			if ws, err := config.LoadWorkspace(wsName); err == nil && ws.IsRemote() {
+				hostName = ws.Host
+			}
+		}
+
+		sk := stateKey(hostName, wsName)
+		st, err := state.Load(sk)
 		if err != nil {
-			return fmt.Errorf("loading state for %q: %w", name, err)
+			return fmt.Errorf("loading state for %q: %w", ref, err)
 		}
 		if !st.Active {
-			return fmt.Errorf("workspace %q is not open", name)
+			return fmt.Errorf("workspace %q is not open", ref)
 		}
 
 		if st.Remote && kill {
-			if err := closeRemoteWorkspace(name, st, true); err != nil {
+			if err := closeRemoteWorkspace(sk, st, true); err != nil {
 				return err
 			}
-			fmt.Printf("Closed workspace %q (killed remote zellij session)\n", name)
+			fmt.Printf("Closed workspace %q (killed remote zellij session)\n", ref)
 			return nil
 		}
 
-		if err := closeWorkspace(name); err != nil {
+		if err := closeWorkspace(ref); err != nil {
 			return err
 		}
 		if st.Remote {
-			fmt.Printf("Closed workspace %q (remote zellij session preserved)\n", name)
+			fmt.Printf("Closed workspace %q (remote zellij session preserved)\n", ref)
 		} else {
-			fmt.Printf("Closed workspace %q\n", name)
+			fmt.Printf("Closed workspace %q\n", ref)
 		}
 		return nil
 	},

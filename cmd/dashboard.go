@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/deps"
 	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/skarlsson/ws-manager/internal/kitty"
 	"github.com/skarlsson/ws-manager/internal/process"
@@ -49,9 +51,26 @@ var (
 )
 
 type workspaceEntry struct {
-	ws     config.Workspace
-	state  state.WorkspaceState
-	claude string
+	ws           config.Workspace
+	state        state.WorkspaceState
+	claude       string
+	remoteStatus *ssh.RemoteStatus // populated for remote workspaces
+}
+
+// ref returns "host:name" for remote entries or just "name" for local.
+func (e workspaceEntry) ref() string {
+	if e.ws.Host != "" {
+		return e.ws.Host + ":" + e.ws.Name
+	}
+	return e.ws.Name
+}
+
+// sk returns the state file key: "host--name" for remote, "name" for local.
+func (e workspaceEntry) sk() string {
+	if e.ws.Host != "" {
+		return e.ws.Host + "_" + e.ws.Name
+	}
+	return e.ws.Name
 }
 
 type confirmAction int
@@ -85,40 +104,124 @@ func newDashboardModel() dashboardModel {
 
 func (m *dashboardModel) refresh() {
 	workspaces, _ := config.ListWorkspaces()
-	m.entries = make([]workspaceEntry, len(workspaces))
 
+	// Fetch remote statuses per host (async, deduplicated)
+	hosts, _ := config.LoadHosts()
+	type hostResult struct {
+		hostName string
+		statuses []ssh.RemoteStatus
+	}
+	remoteResults := make([]hostResult, len(hosts))
 	var wg sync.WaitGroup
-	for i, ws := range workspaces {
-		st, _ := state.Load(ws.Name)
-		// Clean up stale state: marked active but process is dead
-		if st.Active && !kitty.IsRunning(st.KittyPID) {
+	for i, h := range hosts {
+		wg.Add(1)
+		go func(idx int, host config.HostConfig) {
+			defer wg.Done()
+			statuses, _ := ssh.GetRemoteStatuses(host.SSH)
+			remoteResults[idx] = hostResult{hostName: host.Name, statuses: statuses}
+		}(i, h)
+	}
+	wg.Wait()
+
+	// Build map: "host:name" -> RemoteStatus
+	remoteMap := make(map[string]*ssh.RemoteStatus)
+	for i := range remoteResults {
+		for j := range remoteResults[i].statuses {
+			rs := &remoteResults[i].statuses[j]
+			key := remoteResults[i].hostName + ":" + rs.Name
+			remoteMap[key] = rs
+		}
+	}
+
+	m.entries = make([]workspaceEntry, 0, len(workspaces))
+	seenRemote := make(map[string]bool)
+
+	var wg2 sync.WaitGroup
+	for _, ws := range workspaces {
+		// Use stateKey for remote workspaces
+		sk := ws.Name
+		if ws.IsRemote() {
+			sk = ws.Host + "_" + ws.Name
+		}
+		st, _ := state.Load(sk)
+		if st.Active && st.KittyPID > 0 && !kitty.IsRunning(st.KittyPID) {
 			st.Active = false
 			st.KittyPID = 0
 			_ = state.Save(st)
 		}
-		m.entries[i] = workspaceEntry{ws: ws, state: st, claude: "-"}
-		if st.Active && !ws.IsRemote() {
-			wg.Add(1)
-			go func(idx int, session string) {
-				defer wg.Done()
-				m.entries[idx].claude = process.GetClaudeInfo(session).Pretty()
-			}(i, st.ZellijSession)
-		}
-		// Check for detached remote sessions asynchronously
-		if ws.IsRemote() && !st.Active {
-			wg.Add(1)
-			go func(idx int, w config.Workspace) {
-				defer wg.Done()
-				session := zellij.SessionName(w.Name)
-				host, err := config.LoadHost(w.Host)
-				if err == nil && ssh.CheckZellijSession(host.SSH, session) {
-					m.entries[idx].state.Active = false // local kitty not running
-					m.entries[idx].claude = "detached"
+
+		entry := workspaceEntry{ws: ws, state: st, claude: "-"}
+
+		if ws.IsRemote() {
+			seenRemote[ws.Host+":"+ws.Name] = true
+			if rs, ok := remoteMap[ws.Host+":"+ws.Name]; ok {
+				entry.remoteStatus = rs
+				if rs.Active {
+					entry.state.Active = true
+					if st.KittyPID > 0 && kitty.IsRunning(st.KittyPID) {
+						entry.claude = "connected"
+					} else {
+						entry.claude = "detached"
+					}
 				}
-			}(i, ws)
+			}
+			m.entries = append(m.entries, entry)
+		} else {
+			session := zellij.SessionName(ws.Name)
+			if zellij.SessionExists(session) {
+				entry.state.Active = true
+				idx := len(m.entries)
+				m.entries = append(m.entries, entry)
+				wg2.Add(1)
+				go func(i int, s string) {
+					defer wg2.Done()
+					m.entries[i].claude = process.GetClaudeInfo(s).Pretty()
+				}(idx, session)
+			} else {
+				m.entries = append(m.entries, entry)
+			}
 		}
 	}
-	wg.Wait()
+
+	// Auto-discover remote workspaces not locally configured
+	for i := range remoteResults {
+		hr := remoteResults[i]
+		for j := range hr.statuses {
+			rs := &hr.statuses[j]
+			key := hr.hostName + ":" + rs.Name
+			if seenRemote[key] {
+				continue
+			}
+			ws := config.Workspace{
+				Name: rs.Name,
+				Dir:  rs.Dir,
+				Host: hr.hostName,
+			}
+			sk := hr.hostName + "_" + rs.Name
+			st, _ := state.Load(sk)
+			entry := workspaceEntry{
+				ws:           ws,
+				state:        st,
+				claude:       "-",
+				remoteStatus: rs,
+			}
+			if !entry.state.Remote {
+				entry.state.Remote = true
+				entry.state.Host = hr.hostName
+			}
+			if rs.Active {
+				entry.state.Active = true
+				if st.KittyPID > 0 && kitty.IsRunning(st.KittyPID) {
+					entry.claude = "connected"
+				} else {
+					entry.claude = "detached"
+				}
+			}
+			m.entries = append(m.entries, entry)
+		}
+	}
+
+	wg2.Wait()
 
 	if m.cursor >= len(m.entries) && len(m.entries) > 0 {
 		m.cursor = len(m.entries) - 1
@@ -232,18 +335,29 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				break
 			}
-			if e.state.Active && kitty.IsRunning(e.state.KittyPID) {
-				m.setMsg(warnStyle, "%s is already active", e.ws.Name)
+			esk := e.sk()
+			eref := e.ref()
+			if e.state.Active && e.state.KittyPID > 0 && kitty.IsRunning(e.state.KittyPID) {
+				// Kitty already running — focus it
+				if err := bringToFront(esk); err != nil {
+					m.setMsg(errorStyle, "Focus failed: %v", err)
+				} else {
+					m.setMsg(successStyle, "Focused %s", eref)
+				}
+			} else if !e.ws.IsRemote() && zellij.SessionExists(zellij.SessionName(e.ws.Name)) && !deps.HasTool("kitty") {
+				// No kitty available (e.g. on remote server) — attach directly in this terminal
+				return m, tea.ExecProcess(attachExecCmd(e.ws.Name), func(err error) tea.Msg {
+					return openDoneMsg{name: e.ws.Name, err: err}
+				})
 			} else {
-				name := e.ws.Name
 				suffix := ""
 				if e.ws.IsRemote() && e.claude == "detached" {
 					suffix = " (reattaching)"
 				}
-				m.setMsg(normalStyle, "Opening %s%s...", name, suffix)
+				m.setMsg(normalStyle, "Opening %s%s...", eref, suffix)
 				return m, func() tea.Msg {
-					err := openWorkspace(name)
-					return openDoneMsg{name: name, err: err}
+					err := openWorkspace(eref)
+					return openDoneMsg{name: eref, err: err}
 				}
 			}
 
@@ -252,11 +366,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				break
 			}
-			if !e.state.Active || !kitty.IsRunning(e.state.KittyPID) {
-				m.setMsg(warnStyle, "%s is not active", e.ws.Name)
+			isActive := (e.state.Active && e.state.KittyPID > 0 && kitty.IsRunning(e.state.KittyPID)) || zellij.SessionExists(zellij.SessionName(e.ws.Name))
+			if !isActive {
+				m.setMsg(warnStyle, "%s is not active", e.ref())
 			} else {
 				m.confirming = confirmClose
-				m.setMsg(warnStyle, "Close %s? (y/n)", e.ws.Name)
+				m.setMsg(warnStyle, "Close %s? (y/n)", e.ref())
 			}
 
 		case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
@@ -264,13 +379,13 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				break
 			}
-			if !e.state.Active || !kitty.IsRunning(e.state.KittyPID) {
-				m.setMsg(warnStyle, "%s is not active", e.ws.Name)
+			if !e.state.Active || e.state.KittyPID == 0 || !kitty.IsRunning(e.state.KittyPID) {
+				m.setMsg(warnStyle, "%s has no local kitty window to focus", e.ref())
 			} else {
-				if err := bringToFront(e.ws.Name); err != nil {
+				if err := bringToFront(e.sk()); err != nil {
 					m.setMsg(errorStyle, "Focus failed: %v", err)
 				} else {
-					m.setMsg(successStyle, "Focused %s", e.ws.Name)
+					m.setMsg(successStyle, "Focused %s", e.ref())
 				}
 			}
 
@@ -280,10 +395,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if e.state.Active && kitty.IsRunning(e.state.KittyPID) {
-				m.setMsg(warnStyle, "Close %s first before deleting", e.ws.Name)
+				m.setMsg(warnStyle, "Close %s first before deleting", e.ref())
 			} else {
 				m.confirming = confirmDelete
-				m.setMsg(warnStyle, "Delete workspace %s? This removes the config. (y/n)", e.ws.Name)
+				m.setMsg(warnStyle, "Delete workspace %s? This removes the config. (y/n)", e.ref())
 			}
 		}
 	}
@@ -301,18 +416,18 @@ func (m dashboardModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch action {
 		case confirmClose:
-			if err := closeWorkspace(e.ws.Name); err != nil {
+			if err := closeWorkspace(e.ref()); err != nil {
 				m.setMsg(errorStyle, "Close failed: %v", err)
 			} else {
 				m.refresh()
-				m.setMsg(successStyle, "Closed %s", e.ws.Name)
+				m.setMsg(successStyle, "Closed %s", e.ref())
 			}
 		case confirmDelete:
 			if err := config.DeleteWorkspace(e.ws.Name); err != nil {
 				m.setMsg(errorStyle, "Delete failed: %v", err)
 			} else {
 				m.refresh()
-				m.setMsg(successStyle, "Deleted %s", e.ws.Name)
+				m.setMsg(successStyle, "Deleted %s", e.ref())
 			}
 		}
 	} else {
@@ -355,7 +470,9 @@ func (m dashboardModel) View() string {
 				r.dir = "~" + r.dir[len(home):]
 			}
 			r.branch = "-"
-			if !e.ws.IsRemote() {
+			if e.remoteStatus != nil && e.remoteStatus.Branch != "" {
+				r.branch = e.remoteStatus.Branch
+			} else if !e.ws.IsRemote() {
 				if br, err := git.CurrentBranch(e.ws.Dir); err == nil {
 					r.branch = br
 				}
@@ -368,7 +485,7 @@ func (m dashboardModel) View() string {
 			if r.host != "" {
 				hasRemote = true
 			}
-			r.isActive = e.state.Active && kitty.IsRunning(e.state.KittyPID)
+			r.isActive = e.state.Active
 			r.isDetached = e.claude == "detached"
 			if r.isActive {
 				r.status = "active"
@@ -509,6 +626,12 @@ func (m dashboardModel) View() string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// attachExecCmd returns an exec.Cmd for "ws attach <name>" to hand off to tea.ExecProcess.
+func attachExecCmd(name string) *exec.Cmd {
+	self, _ := os.Executable()
+	return exec.Command(self, "attach", name)
 }
 
 func pad(s string, width int) string {
