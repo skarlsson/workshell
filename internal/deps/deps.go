@@ -2,7 +2,10 @@ package deps
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -12,29 +15,47 @@ type ToolStatus struct {
 	Found    bool
 	Path     string
 	Note     string
+	Remote   bool // needed on remote side
 }
 
-var tools = []struct {
+type toolDef struct {
 	Name     string
 	Required bool
 	Note     string
-}{
-	{"kitty", true, "terminal emulator"},
-	{"zellij", true, "terminal multiplexer"},
-	{"git", true, "branch/task management"},
-	{"xdotool", false, "window move/focus/minimize"},
-	{"xprop", false, "window title updates"},
-	{"gdbus", false, "monitor detection (GNOME/Mutter)"},
+	Remote   bool // needed when running as remote server
+}
+
+var tools = []toolDef{
+	{"kitty", true, "terminal emulator", false},
+	{"zellij", true, "terminal multiplexer", true},
+	{"claude", true, "AI coding assistant", true},
+	{"git", true, "branch/task management", true},
+	{"xdotool", false, "window move/focus/minimize", false},
+	{"xprop", false, "window title updates", false},
+	{"gdbus", false, "monitor detection (GNOME/Mutter)", false},
 }
 
 // CheckAll returns the status of all required and optional tools.
 func CheckAll() []ToolStatus {
+	return checkTools(false)
+}
+
+// CheckRemote returns the status of tools needed on a remote server.
+func CheckRemote() []ToolStatus {
+	return checkTools(true)
+}
+
+func checkTools(remoteOnly bool) []ToolStatus {
 	var results []ToolStatus
 	for _, t := range tools {
+		if remoteOnly && !t.Remote {
+			continue
+		}
 		ts := ToolStatus{
 			Name:     t.Name,
 			Required: t.Required,
 			Note:     t.Note,
+			Remote:   t.Remote,
 		}
 		if path, err := exec.LookPath(t.Name); err == nil {
 			ts.Found = true
@@ -57,7 +78,7 @@ func CheckRequired() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("required tools not found in PATH: %s\nRun 'ws doctor' for details or 'bash install_deps.sh' to install", strings.Join(missing, ", "))
+		return fmt.Errorf("required tools not found in PATH: %s\nRun 'ws doctor' for details or 'ws deps install' to install", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -66,4 +87,83 @@ func CheckRequired() error {
 func HasTool(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// Install attempts to install a missing tool. Returns nil if already installed.
+func Install(name string) error {
+	if HasTool(name) {
+		return nil
+	}
+
+	switch name {
+	case "zellij":
+		return installZellij()
+	case "claude":
+		return installClaude()
+	default:
+		return fmt.Errorf("%s: no auto-install available — install via your package manager", name)
+	}
+}
+
+func installZellij() error {
+	arch := runtime.GOARCH
+	var zellijArch string
+	switch arch {
+	case "amd64":
+		zellijArch = "x86_64-unknown-linux-musl"
+	case "arm64":
+		zellijArch = "aarch64-unknown-linux-musl"
+	default:
+		return fmt.Errorf("unsupported architecture for zellij: %s", arch)
+	}
+
+	binDir := localBinDir()
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("creating %s: %w", binDir, err)
+	}
+
+	url := fmt.Sprintf("https://github.com/zellij-org/zellij/releases/latest/download/zellij-%s.tar.gz", zellijArch)
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("curl -fsSL -L '%s' | tar xz -C '%s'", url, binDir))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("downloading zellij: %w", err)
+	}
+
+	return nil
+}
+
+func installClaude() error {
+	cmd := exec.Command("bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("installing claude: %w", err)
+	}
+	return nil
+}
+
+func localBinDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "bin")
+}
+
+// InstallMissing installs all missing required tools that support auto-install.
+// If remoteOnly is true, only installs tools needed on remote servers.
+func InstallMissing(remoteOnly bool) []string {
+	var installed []string
+	for _, t := range tools {
+		if remoteOnly && !t.Remote {
+			continue
+		}
+		if !t.Required || HasTool(t.Name) {
+			continue
+		}
+		if err := Install(t.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: %v\n", t.Name, err)
+		} else {
+			installed = append(installed, t.Name)
+		}
+	}
+	return installed
 }

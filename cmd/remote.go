@@ -131,7 +131,7 @@ var remoteSetupCmd = &cobra.Command{
 		if !installed {
 			fmt.Print("  Installing via GitHub release... ")
 			dlCmd := fmt.Sprintf(
-				"mkdir -p ~/.local/bin && curl -fsSL https://github.com/skarlsson/ws-manager/releases/latest/download/ws-linux-%s -o ~/.local/bin/ws && chmod +x ~/.local/bin/ws",
+				"mkdir -p ~/.local/bin && curl -fsSL -L https://github.com/skarlsson/ws-manager/releases/latest/download/ws-linux-%s -o ~/.local/bin/ws && chmod +x ~/.local/bin/ws",
 				goarch,
 			)
 			if _, err := ssh.Run(host.SSH, dlCmd); err != nil {
@@ -141,8 +141,8 @@ var remoteSetupCmd = &cobra.Command{
 			fmt.Println("OK")
 		}
 
-		// Verify
-		fmt.Print("  Verifying installation... ")
+		// Verify ws
+		fmt.Print("  Verifying ws... ")
 		ver, err := ssh.Run(host.SSH, "~/.local/bin/ws version 2>&1 || echo 'ws not working'")
 		if err != nil {
 			fmt.Println("FAILED")
@@ -150,13 +150,26 @@ var remoteSetupCmd = &cobra.Command{
 		}
 		fmt.Println(ver)
 
-		// Run doctor
-		fmt.Print("  Running ws doctor... ")
-		doc, err := ssh.Run(host.SSH, "~/.local/bin/ws doctor 2>&1")
-		if err != nil {
-			fmt.Printf("warnings:\n%s\n", doc)
+		// Ensure ~/.local/bin is in PATH before installing deps
+		fmt.Print("  Checking PATH... ")
+		pathCheck, _ := ssh.Run(host.SSH, "echo $PATH")
+		if !strings.Contains(pathCheck, ".local/bin") {
+			fmt.Println("adding ~/.local/bin to PATH")
+			ssh.Run(host.SSH, `grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc`)
 		} else {
-			fmt.Printf("\n%s\n", doc)
+			fmt.Println("OK")
+		}
+
+		// Install remote dependencies via ws on the remote
+		fmt.Println("  Installing remote dependencies...")
+		depOut, err := ssh.Run(host.SSH, "export PATH=\"$HOME/.local/bin:$PATH\" && ws deps install --remote 2>&1")
+		if err != nil {
+			fmt.Printf("  Warning: %v\n", err)
+		}
+		if depOut != "" {
+			for _, line := range strings.Split(depOut, "\n") {
+				fmt.Printf("    %s\n", line)
+			}
 		}
 
 		fmt.Printf("\nSetup complete for %s\n", host.Name)
