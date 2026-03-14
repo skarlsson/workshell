@@ -48,7 +48,6 @@ var taskStartCmd = &cobra.Command{
 			fmt.Printf("Created and switched to task branch %q\n", branch)
 		}
 
-		ws.CurrentBranch = branch
 		ws.CurrentTask = taskName
 		refreshTitle(ws.Name)
 		return config.SaveWorkspace(ws)
@@ -95,7 +94,6 @@ var taskDoneCmd = &cobra.Command{
 		fmt.Printf("Finished task %q (branch %q preserved)\n", ws.CurrentTask, currentBranch)
 		fmt.Println("Branch was not deleted. Merge or create a PR when ready.")
 
-		ws.CurrentBranch = base
 		ws.CurrentTask = ""
 		refreshTitle(ws.Name)
 		return config.SaveWorkspace(ws)
@@ -169,7 +167,6 @@ var taskSwitchCmd = &cobra.Command{
 			return fmt.Errorf("checking out branch: %w", err)
 		}
 
-		ws.CurrentBranch = branch
 		ws.CurrentTask = taskName
 		refreshTitle(ws.Name)
 		if err := config.SaveWorkspace(ws); err != nil {

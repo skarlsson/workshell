@@ -98,7 +98,6 @@ var newCmd = &cobra.Command{
 			Name:          name,
 			Dir:           dir,
 			DefaultBranch: defaultBranch,
-			CurrentBranch: defaultBranch,
 			Layout:        layout,
 			AutoClaude:    autoClaude,
 			SetupCommands: setupCmds,

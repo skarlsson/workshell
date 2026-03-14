@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/skarlsson/ws-manager/internal/kitty"
 	"github.com/skarlsson/ws-manager/internal/process"
 	"github.com/skarlsson/ws-manager/internal/state"
@@ -15,6 +16,7 @@ import (
 
 type listEntry struct {
 	ws     config.Workspace
+	branch string
 	status string
 	task   string
 	claude string
@@ -45,6 +47,12 @@ var listCmd = &cobra.Command{
 				entries[i].task = "-"
 			}
 
+			if branch, err := git.CurrentBranch(ws.Dir); err == nil {
+				entries[i].branch = branch
+			} else {
+				entries[i].branch = "-"
+			}
+
 			st, _ := state.Load(ws.Name)
 			if st.Active && kitty.IsRunning(st.KittyPID) {
 				entries[i].status = "active"
@@ -65,7 +73,7 @@ var listCmd = &cobra.Command{
 		fmt.Fprintln(w, "NAME\tDIR\tBRANCH\tTASK\tSTATUS\tCLAUDE")
 		fmt.Fprintln(w, "----\t---\t------\t----\t------\t------")
 		for _, e := range entries {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.ws.Name, e.ws.Dir, e.ws.CurrentBranch, e.task, e.status, e.claude)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.ws.Name, e.ws.Dir, e.branch, e.task, e.status, e.claude)
 		}
 		w.Flush()
 		return nil

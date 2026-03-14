@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/skarlsson/ws-manager/internal/deps"
 )
 
 type MonitorInfo struct {
@@ -18,6 +20,9 @@ type MonitorInfo struct {
 
 // ListMonitors queries Mutter DisplayConfig via gdbus for monitor layout.
 func ListMonitors() ([]MonitorInfo, error) {
+	if !deps.HasTool("gdbus") {
+		return nil, fmt.Errorf("gdbus not found in PATH (required for monitor detection on GNOME/Mutter)")
+	}
 	out, err := exec.Command("gdbus", "call",
 		"--session",
 		"--dest", "org.gnome.Mutter.DisplayConfig",
@@ -124,8 +129,12 @@ func GetMonitor(connector string) (MonitorInfo, error) {
 }
 
 // MoveWindow moves an X11 window to a specific position using xdotool.
+// Coordinates are in "move space" (frame position).
 func MoveWindow(xWindowID int, x, y int) error {
-	out, err := exec.Command("xdotool", "windowmove", strconv.Itoa(xWindowID),
+	if !deps.HasTool("xdotool") {
+		return fmt.Errorf("xdotool not found in PATH (required for window management)")
+	}
+	out, err := exec.Command("xdotool", "windowmove", "--sync", strconv.Itoa(xWindowID),
 		strconv.Itoa(x), strconv.Itoa(y)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xdotool windowmove: %w\n%s", err, string(out))
@@ -133,8 +142,23 @@ func MoveWindow(xWindowID int, x, y int) error {
 	return nil
 }
 
+// CalibrateOffset moves a window to (x,y), reads back the reported position,
+// and returns the offset (readX - moveX, readY - moveY). This offset is the
+// constant difference between getwindowgeometry (client area) and windowmove
+// (frame position) coordinate spaces.
+func CalibrateOffset(xWindowID int, moveX, moveY int) (int, int) {
+	readX, readY, err := GetWindowPosition(xWindowID)
+	if err != nil {
+		return 0, 0
+	}
+	return readX - moveX, readY - moveY
+}
+
 // ActivateWindow raises and focuses an X11 window using xdotool.
 func ActivateWindow(xWindowID int) error {
+	if !deps.HasTool("xdotool") {
+		return fmt.Errorf("xdotool not found in PATH (required for window management)")
+	}
 	out, err := exec.Command("xdotool", "windowactivate", strconv.Itoa(xWindowID)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xdotool windowactivate: %w\n%s", err, string(out))
@@ -143,7 +167,12 @@ func ActivateWindow(xWindowID int) error {
 }
 
 // GetWindowPosition returns the current x,y position of a window.
+// Note: returns "read space" coordinates (client area). To convert to "move space"
+// (for use with MoveWindow), subtract the offset from CalibrateOffset.
 func GetWindowPosition(xWindowID int) (int, int, error) {
+	if !deps.HasTool("xdotool") {
+		return 0, 0, fmt.Errorf("xdotool not found in PATH (required for window management)")
+	}
 	out, err := exec.Command("xdotool", "getwindowgeometry", "--shell", strconv.Itoa(xWindowID)).CombinedOutput()
 	if err != nil {
 		return 0, 0, fmt.Errorf("xdotool getwindowgeometry: %w\n%s", err, string(out))
@@ -161,6 +190,9 @@ func GetWindowPosition(xWindowID int) (int, int, error) {
 
 // MinimizeWindow minimizes a window (for single-monitor/laptop mode).
 func MinimizeWindow(xWindowID int) error {
+	if !deps.HasTool("xdotool") {
+		return fmt.Errorf("xdotool not found in PATH (required for window management)")
+	}
 	out, err := exec.Command("xdotool", "windowminimize", strconv.Itoa(xWindowID)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xdotool windowminimize: %w\n%s", err, string(out))

@@ -13,7 +13,6 @@ type Workspace struct {
 	Name          string   `yaml:"name"`
 	Dir           string   `yaml:"dir"`
 	DefaultBranch string   `yaml:"default_branch"`
-	CurrentBranch string   `yaml:"current_branch"`
 	CurrentTask   string   `yaml:"current_task,omitempty"`
 	Layout        string   `yaml:"layout"`
 	AutoClaude    bool     `yaml:"auto_claude"`
@@ -26,7 +25,6 @@ func DefaultWorkspace(name, dir string) Workspace {
 		Name:          name,
 		Dir:           dir,
 		DefaultBranch: "main",
-		CurrentBranch: "main",
 		Layout:        "default",
 		AutoClaude:    true,
 	}
@@ -93,6 +91,10 @@ func (w Workspace) Validate() error {
 		return fmt.Errorf("workspace layout is required")
 	}
 	return nil
+}
+
+func DeleteWorkspace(name string) error {
+	return os.Remove(WorkspacePath(name))
 }
 
 func WorkspaceExists(name string) bool {

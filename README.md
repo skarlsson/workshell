@@ -6,10 +6,15 @@ Each workspace gets its own kitty window with a zellij layout (claude + build + 
 
 ## Prerequisites
 
-- **kitty** terminal emulator
-- **zellij** terminal multiplexer
-- **git**
-- Linux with GNOME/Wayland (for monitor rotation features)
+**Required** (core features):
+- **kitty** — terminal emulator
+- **zellij** — terminal multiplexer
+- **git** — branch/task management
+
+**Optional** (monitor/window management, GNOME-specific):
+- **xdotool** — window move/focus/minimize (`ws focus`, `ws rotate`, `ws capture`)
+- **xprop** — window title updates (cosmetic, silently skipped if missing)
+- **gdbus** — monitor detection via GNOME/Mutter (`ws focus`, `ws rotate`)
 
 No kitty configuration needed. `ws open` launches its own kitty instances with remote control enabled and per-workspace sockets at `$XDG_RUNTIME_DIR/kitty-ws-<name>` (falls back to `/tmp`).
 

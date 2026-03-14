@@ -28,6 +28,13 @@ func captureHome(name string) error {
 		return fmt.Errorf("getting position for %q: %w", name, err)
 	}
 
+	// Convert from read-space (client area) to move-space (frame) using calibrated offset
+	fp := state.LoadFocusPosition()
+	if fp.Calibrated {
+		x -= fp.OffsetX
+		y -= fp.OffsetY
+	}
+
 	st.HomeX = x
 	st.HomeY = y
 	st.HomeCaptured = true
@@ -71,6 +78,45 @@ var captureCmd = &cobra.Command{
 	},
 }
 
+var captureFocusCmd = &cobra.Command{
+	Use:   "capture-focus",
+	Short: "Save the focused workspace's current position as the focus/rotate target",
+	Long:  "Drag your focused workspace window where you want it, then run this. All future ws focus/rotate will place windows at this position.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := state.LoadFocused()
+		if name == "" {
+			return fmt.Errorf("no workspace currently focused — run 'ws focus <name>' first")
+		}
+
+		st, err := state.Load(name)
+		if err != nil || !st.Active || !kitty.IsRunning(st.KittyPID) {
+			return fmt.Errorf("workspace %q is not running", name)
+		}
+
+		winID, err := kitty.PlatformWindowID(name)
+		if err != nil {
+			return err
+		}
+
+		x, y, err := monitor.GetWindowPosition(winID)
+		if err != nil {
+			return err
+		}
+
+		// Convert from read-space to move-space using calibrated offset
+		fp := state.LoadFocusPosition()
+		if fp.Calibrated {
+			x -= fp.OffsetX
+			y -= fp.OffsetY
+		}
+
+		state.SaveFocusPosition(x, y)
+		fmt.Printf("Focus position set to (%d, %d)\n", x, y)
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(captureCmd)
+	rootCmd.AddCommand(captureFocusCmd)
 }

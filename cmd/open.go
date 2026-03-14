@@ -14,73 +14,79 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// openWorkspace opens a workspace by launching kitty + zellij.
+func openWorkspace(name string) error {
+	ws, err := config.LoadWorkspace(name)
+	if err != nil {
+		return fmt.Errorf("workspace %q not found: %w", name, err)
+	}
+
+	// Check if already active
+	st, _ := state.Load(name)
+	if st.Active && kitty.IsRunning(st.KittyPID) {
+		return fmt.Errorf("workspace %q is already open (PID %d)", name, st.KittyPID)
+	}
+
+	// Generate layout
+	layoutPath, err := zellij.GenerateLayout(ws)
+	if err != nil {
+		return fmt.Errorf("generating layout: %w", err)
+	}
+
+	// Clean up any dead zellij session with the same name
+	session := zellij.SessionName(name)
+	zellij.CleanupSession(session)
+
+	// Launch kitty with branch in title
+	title := fmt.Sprintf("ws: %s", name)
+	if git.IsGitRepo(ws.Dir) {
+		if branch, err := git.CurrentBranch(ws.Dir); err == nil {
+			title = fmt.Sprintf("ws: %s [%s]", name, branch)
+		}
+	}
+	pid, err := kitty.Launch(name, ws.Dir, title)
+	if err != nil {
+		return fmt.Errorf("launching kitty: %w", err)
+	}
+
+	// Wait for kitty socket to be ready
+	socket := kitty.SocketPath(name)
+	zellijCmd := zellij.LaunchCommand(session, layoutPath, ws.Dir)
+
+	if err := waitForSocket(socket, 5*time.Second); err != nil {
+		fmt.Printf("Warning: kitty socket not ready: %v\n", err)
+	}
+
+	if err := kitty.SendText(socket, zellijCmd); err != nil {
+		fmt.Printf("Warning: could not auto-start zellij: %v\n", err)
+		fmt.Println("Start it manually with: zellij --session", session, "--layout", layoutPath)
+	}
+
+	// Save state
+	st = state.WorkspaceState{
+		Name:          name,
+		KittyPID:      pid,
+		ZellijSession: session,
+		Active:        true,
+	}
+	if err := state.Save(st); err != nil {
+		return fmt.Errorf("saving state: %w", err)
+	}
+
+	return nil
+}
+
 var openCmd = &cobra.Command{
 	Use:   "open <workspace>",
 	Short: "Open a workspace in a new kitty window with zellij",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-
-		ws, err := config.LoadWorkspace(name)
-		if err != nil {
-			return fmt.Errorf("workspace %q not found: %w", name, err)
+		if err := openWorkspace(name); err != nil {
+			return err
 		}
-
-		// Check if already active
 		st, _ := state.Load(name)
-		if st.Active && kitty.IsRunning(st.KittyPID) {
-			fmt.Printf("Workspace %q is already open (PID %d)\n", name, st.KittyPID)
-			return nil
-		}
-
-		// Generate layout
-		layoutPath, err := zellij.GenerateLayout(ws)
-		if err != nil {
-			return fmt.Errorf("generating layout: %w", err)
-		}
-
-		// Clean up any dead zellij session with the same name
-		session := zellij.SessionName(name)
-		zellij.CleanupSession(session)
-
-		// Launch kitty with branch in title
-		title := fmt.Sprintf("ws: %s", name)
-		if git.IsGitRepo(ws.Dir) {
-			if branch, err := git.CurrentBranch(ws.Dir); err == nil {
-				title = fmt.Sprintf("ws: %s [%s]", name, branch)
-			}
-		}
-		pid, err := kitty.Launch(name, ws.Dir, title)
-		if err != nil {
-			return fmt.Errorf("launching kitty: %w", err)
-		}
-
-		// Wait for kitty socket to be ready
-		socket := kitty.SocketPath(name)
-		zellijCmd := zellij.LaunchCommand(session, layoutPath, ws.Dir)
-
-		// Wait for kitty socket to become available
-		if err := waitForSocket(socket, 5*time.Second); err != nil {
-			fmt.Printf("Warning: kitty socket not ready: %v\n", err)
-		}
-
-		if err := kitty.SendText(socket, zellijCmd); err != nil {
-			fmt.Printf("Warning: could not auto-start zellij: %v\n", err)
-			fmt.Println("Start it manually with: zellij --session", session, "--layout", layoutPath)
-		}
-
-		// Save state
-		st = state.WorkspaceState{
-			Name:          name,
-			KittyPID:      pid,
-			ZellijSession: session,
-			Active:        true,
-		}
-		if err := state.Save(st); err != nil {
-			return fmt.Errorf("saving state: %w", err)
-		}
-
-		fmt.Printf("Opened workspace %q (kitty PID %d, zellij session %q)\n", name, pid, session)
+		fmt.Printf("Opened workspace %q (kitty PID %d, zellij session %q)\n", name, st.KittyPID, st.ZellijSession)
 		return nil
 	},
 }

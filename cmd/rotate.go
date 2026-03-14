@@ -31,11 +31,26 @@ func bringToFront(name string) error {
 
 	prev := state.LoadFocused()
 
+	// Move previous workspace away
+	if prev != "" && prev != name {
+		prevSt, err := state.Load(prev)
+		if err == nil && prevSt.Active && kitty.IsRunning(prevSt.KittyPID) {
+			prevWinID, err := kitty.PlatformWindowID(prev)
+			if err == nil {
+				if mode == "single" {
+					monitor.MinimizeWindow(prevWinID)
+				} else if prevSt.HomeCaptured {
+					monitor.MoveWindow(prevWinID, prevSt.HomeX, prevSt.HomeY)
+				}
+			}
+		}
+	}
+
 	if mode == "single" {
-		// Minimize all other active workspaces
+		// Minimize remaining active workspaces
 		active, _ := state.ListActive()
 		for _, other := range active {
-			if other.Name == name || !kitty.IsRunning(other.KittyPID) {
+			if other.Name == name || other.Name == prev || !kitty.IsRunning(other.KittyPID) {
 				continue
 			}
 			otherWinID, err := kitty.PlatformWindowID(other.Name)
@@ -43,25 +58,27 @@ func bringToFront(name string) error {
 				monitor.MinimizeWindow(otherWinID)
 			}
 		}
-	} else {
-		// Multi mode: move previous workspace back to its home position
-		if prev != "" && prev != name {
-			prevSt, err := state.Load(prev)
-			if err == nil && prevSt.Active && kitty.IsRunning(prevSt.KittyPID) {
-				prevWinID, err := kitty.PlatformWindowID(prev)
-				if err == nil && prevSt.HomeCaptured {
-					monitor.MoveWindow(prevWinID, prevSt.HomeX, prevSt.HomeY)
-				}
-			}
-		}
 	}
 
-	// Move target to work monitor
-	if cfg.WorkMonitor != "" {
+	// Move target to saved focus position, or fall back to work monitor origin
+	var moveX, moveY int
+	focusPos := state.LoadFocusPosition()
+	if focusPos.Captured {
+		moveX, moveY = focusPos.X, focusPos.Y
+	} else if cfg.WorkMonitor != "" {
 		mon, err := monitor.GetMonitor(cfg.WorkMonitor)
 		if err == nil {
-			monitor.MoveWindow(winID, mon.X, mon.Y)
+			moveX, moveY = mon.X, mon.Y
 		}
+	}
+	monitor.MoveWindow(winID, moveX, moveY)
+	state.SaveFocusPosition(moveX, moveY)
+
+	// Calibrate the coordinate offset (getwindowgeometry vs windowmove)
+	// so that ws capture can convert read coords to move coords
+	if !focusPos.Calibrated {
+		dx, dy := monitor.CalibrateOffset(winID, moveX, moveY)
+		state.SaveFocusOffset(dx, dy)
 	}
 
 	// Activate

@@ -65,12 +65,9 @@ func getWorkspaceStatus(name, focused string) (WorkspaceStatus, error) {
 	st, _ := state.Load(name)
 	active := st.Active && kitty.IsRunning(st.KittyPID)
 
-	// Read actual branch from disk, fall back to config
-	branch := ws.CurrentBranch
-	if git.IsGitRepo(ws.Dir) {
-		if b, err := git.CurrentBranch(ws.Dir); err == nil {
-			branch = b
-		}
+	branch := "-"
+	if b, err := git.CurrentBranch(ws.Dir); err == nil {
+		branch = b
 	}
 
 	s := WorkspaceStatus{
