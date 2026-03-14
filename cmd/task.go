@@ -50,6 +50,7 @@ var taskStartCmd = &cobra.Command{
 
 		ws.CurrentBranch = branch
 		ws.CurrentTask = taskName
+		refreshTitle(ws.Name)
 		return config.SaveWorkspace(ws)
 	},
 }
@@ -82,16 +83,21 @@ var taskDoneCmd = &cobra.Command{
 			}
 		}
 
-		// Switch back to main
-		if err := git.Checkout(ws.Dir, "main"); err != nil {
-			return fmt.Errorf("checking out main: %w", err)
+		// Switch back to default branch
+		base := ws.DefaultBranch
+		if base == "" {
+			base = "main"
+		}
+		if err := git.Checkout(ws.Dir, base); err != nil {
+			return fmt.Errorf("checking out %s: %w", base, err)
 		}
 
 		fmt.Printf("Finished task %q (branch %q preserved)\n", ws.CurrentTask, currentBranch)
 		fmt.Println("Branch was not deleted. Merge or create a PR when ready.")
 
-		ws.CurrentBranch = "main"
+		ws.CurrentBranch = base
 		ws.CurrentTask = ""
+		refreshTitle(ws.Name)
 		return config.SaveWorkspace(ws)
 	},
 }
@@ -165,6 +171,7 @@ var taskSwitchCmd = &cobra.Command{
 
 		ws.CurrentBranch = branch
 		ws.CurrentTask = taskName
+		refreshTitle(ws.Name)
 		if err := config.SaveWorkspace(ws); err != nil {
 			return fmt.Errorf("saving workspace: %w", err)
 		}

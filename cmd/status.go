@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/skarlsson/ws-manager/internal/kitty"
 	"github.com/skarlsson/ws-manager/internal/process"
 	"github.com/skarlsson/ws-manager/internal/state"
@@ -64,10 +65,18 @@ func getWorkspaceStatus(name, focused string) (WorkspaceStatus, error) {
 	st, _ := state.Load(name)
 	active := st.Active && kitty.IsRunning(st.KittyPID)
 
+	// Read actual branch from disk, fall back to config
+	branch := ws.CurrentBranch
+	if git.IsGitRepo(ws.Dir) {
+		if b, err := git.CurrentBranch(ws.Dir); err == nil {
+			branch = b
+		}
+	}
+
 	s := WorkspaceStatus{
 		Name:    ws.Name,
 		Dir:     ws.Dir,
-		Branch:  ws.CurrentBranch,
+		Branch:  branch,
 		Task:    ws.CurrentTask,
 		Active:  active,
 		Focused: name == focused,

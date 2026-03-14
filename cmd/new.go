@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/spf13/cobra"
 )
 
@@ -45,18 +46,17 @@ var newCmd = &cobra.Command{
 		}
 
 		// 2. Directory
-		defaultDir := filepath.Join(os.Getenv("HOME"), "projects", name)
+		cwd, _ := os.Getwd()
+		defaultDir := filepath.Join(cwd, name)
 		dir := prompt("Directory", defaultDir)
 		dir, _ = filepath.Abs(dir)
 
-		// 3. Git repo URL
-		repo := prompt("Git repo URL (optional, for cloning)", "")
-
-		// Create or clone directory
+		// 3. Ensure directory exists — clone if needed
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			repo := prompt("Directory doesn't exist. Git repo URL to clone (empty to create empty dir)", "")
 			if repo != "" {
 				fmt.Printf("Cloning %s into %s...\n", repo, dir)
-				clone := exec.Command("git", "clone", repo, dir)
+				clone := exec.Command("git", "clone", "--recursive", repo, dir)
 				clone.Stdout = os.Stdout
 				clone.Stderr = os.Stderr
 				if err := clone.Run(); err != nil {
@@ -91,11 +91,14 @@ var newCmd = &cobra.Command{
 			setupCmds = append(setupCmds, line)
 		}
 
+		// Detect default branch from the repo
+		defaultBranch := git.DefaultBranch(dir)
+
 		ws := config.Workspace{
 			Name:          name,
 			Dir:           dir,
-			Repo:          repo,
-			CurrentBranch: "main",
+			DefaultBranch: defaultBranch,
+			CurrentBranch: defaultBranch,
 			Layout:        layout,
 			AutoClaude:    autoClaude,
 			SetupCommands: setupCmds,

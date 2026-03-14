@@ -5,10 +5,10 @@ set -euo pipefail
 # super+r  → rotate workspaces
 # super+u  → unfocus (send current workspace back to home position)
 
-WS_BIN="$HOME/.local/bin/ws"
+WS_BIN=$(command -v ws 2>/dev/null || echo "$HOME/.local/bin/ws")
 
 if [ ! -f "$WS_BIN" ]; then
-    echo "Error: ws not found at $WS_BIN — run 'bash build.sh install' first"
+    echo "Error: ws not found — run 'bash build.sh install' first"
     exit 1
 fi
 

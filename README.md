@@ -11,7 +11,7 @@ Each workspace gets its own kitty window with a zellij layout (claude + build + 
 - **git**
 - Linux with GNOME/Wayland (for monitor rotation features)
 
-No kitty configuration needed. `ws open` launches its own kitty instances with remote control enabled and per-workspace sockets at `/tmp/kitty-ws-<name>`.
+No kitty configuration needed. `ws open` launches its own kitty instances with remote control enabled and per-workspace sockets at `$XDG_RUNTIME_DIR/kitty-ws-<name>` (falls back to `/tmp`).
 
 ## Install
 
@@ -38,6 +38,7 @@ Or create `~/.config/ws-manager/workspaces/<name>.yaml` directly:
 ```yaml
 name: myproject
 dir: /home/user/myproject
+default_branch: main
 current_branch: main
 layout: default
 auto_claude: true

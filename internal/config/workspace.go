@@ -12,7 +12,7 @@ import (
 type Workspace struct {
 	Name          string   `yaml:"name"`
 	Dir           string   `yaml:"dir"`
-	Repo          string   `yaml:"repo,omitempty"`
+	DefaultBranch string   `yaml:"default_branch"`
 	CurrentBranch string   `yaml:"current_branch"`
 	CurrentTask   string   `yaml:"current_task,omitempty"`
 	Layout        string   `yaml:"layout"`
@@ -25,6 +25,7 @@ func DefaultWorkspace(name, dir string) Workspace {
 	return Workspace{
 		Name:          name,
 		Dir:           dir,
+		DefaultBranch: "main",
 		CurrentBranch: "main",
 		Layout:        "default",
 		AutoClaude:    true,

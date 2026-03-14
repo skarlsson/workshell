@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/skarlsson/ws-manager/internal/kitty"
 	"github.com/skarlsson/ws-manager/internal/monitor"
 	"github.com/skarlsson/ws-manager/internal/state"
@@ -68,8 +69,25 @@ func bringToFront(name string) error {
 		return err
 	}
 
+	// Refresh window title with current branch
+	refreshTitle(name)
+
 	state.SaveFocused(name)
 	return nil
+}
+
+func refreshTitle(name string) {
+	ws, err := config.LoadWorkspace(name)
+	if err != nil {
+		return
+	}
+	title := fmt.Sprintf("ws: %s", name)
+	if git.IsGitRepo(ws.Dir) {
+		if branch, err := git.CurrentBranch(ws.Dir); err == nil {
+			title = fmt.Sprintf("ws: %s [%s]", name, branch)
+		}
+	}
+	kitty.SetTitle(name, title)
 }
 
 var rotateCmd = &cobra.Command{

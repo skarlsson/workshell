@@ -76,3 +76,17 @@ func IsGitRepo(dir string) bool {
 	_, err := run(dir, "rev-parse", "--git-dir")
 	return err == nil
 }
+
+// DefaultBranch returns the default branch name (e.g. "main" or "master")
+// by checking the remote HEAD. Falls back to "main" if detection fails.
+func DefaultBranch(dir string) string {
+	out, err := run(dir, "symbolic-ref", "refs/remotes/origin/HEAD")
+	if err == nil {
+		// output is like "refs/remotes/origin/main"
+		parts := strings.Split(out, "/")
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	return "main"
+}

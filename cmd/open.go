@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/skarlsson/ws-manager/internal/config"
+	"github.com/skarlsson/ws-manager/internal/git"
 	"github.com/skarlsson/ws-manager/internal/kitty"
 	"github.com/skarlsson/ws-manager/internal/state"
 	"github.com/skarlsson/ws-manager/internal/zellij"
@@ -42,8 +43,13 @@ var openCmd = &cobra.Command{
 		session := zellij.SessionName(name)
 		zellij.CleanupSession(session)
 
-		// Launch kitty
+		// Launch kitty with branch in title
 		title := fmt.Sprintf("ws: %s", name)
+		if git.IsGitRepo(ws.Dir) {
+			if branch, err := git.CurrentBranch(ws.Dir); err == nil {
+				title = fmt.Sprintf("ws: %s [%s]", name, branch)
+			}
+		}
 		pid, err := kitty.Launch(name, ws.Dir, title)
 		if err != nil {
 			return fmt.Errorf("launching kitty: %w", err)

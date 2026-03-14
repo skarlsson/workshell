@@ -111,6 +111,21 @@ func SendText(socket string, text string) error {
 	return err
 }
 
+// SetTitle sets the OS window title for a workspace's kitty instance
+// by setting _NET_WM_NAME via xprop (zellij intercepts escape sequences).
+func SetTitle(wsName, title string) error {
+	winID, err := PlatformWindowID(wsName)
+	if err != nil {
+		return err
+	}
+	id := strconv.Itoa(winID)
+	out, err := exec.Command("xprop", "-id", id, "-f", "_NET_WM_NAME", "8u", "-set", "_NET_WM_NAME", title).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("xprop set _NET_WM_NAME: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
 // KillProcess sends SIGTERM to a kitty process by PID.
 func KillProcess(pid int) error {
 	proc, err := os.FindProcess(pid)
