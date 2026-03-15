@@ -35,7 +35,9 @@ var ioTracker = struct {
 }{prev: make(map[string]int64)}
 
 // ioThreshold: bytes read below this in one poll interval means "waiting for input".
-const ioThreshold = 500
+// Idle Claude reads ~150 bytes/3s (epoll housekeeping). Typing adds a few hundred.
+// Active Claude (API streaming) reads 10KB+ per interval.
+const ioThreshold = 2000
 
 // GetClaudeInfo checks if claude is running in a zellij session.
 // Reads /proc directly - no subprocesses.
