@@ -104,3 +104,7 @@ bash build.sh           # build ./ws
 bash build.sh install   # build + copy to ~/.local/bin/ws
 VERSION=1.0.0 bash build.sh  # build with specific version
 ```
+
+## License
+
+[AGPL-3.0](LICENSE)
