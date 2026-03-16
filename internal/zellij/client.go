@@ -2,12 +2,32 @@ package zellij
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
+// FindBin resolves the zellij binary path, checking user-local installs first.
+func FindBin() string {
+	if p, err := exec.LookPath("zellij"); err == nil {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	for _, dir := range []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+	} {
+		p := filepath.Join(dir, "zellij")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "zellij"
+}
+
 func run(args ...string) (string, error) {
-	cmd := exec.Command("zellij", args...)
+	cmd := exec.Command(FindBin(), args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("zellij %s: %w\n%s", strings.Join(args, " "), err, string(out))
@@ -39,8 +59,8 @@ func DeleteSession(name string) error {
 
 // CleanupSession kills and deletes a session, ignoring errors (session may not exist).
 func CleanupSession(name string) {
-	KillSession(name)
-	DeleteSession(name)
+	_ = KillSession(name)
+	_ = DeleteSession(name)
 }
 
 func SessionExists(name string) bool {

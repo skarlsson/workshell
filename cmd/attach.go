@@ -31,12 +31,7 @@ var attachCmd = &cobra.Command{
 		}
 
 		session := zellij.SessionName(name)
-
-		// Find zellij binary
-		zellijBin, err := findZellij()
-		if err != nil {
-			return err
-		}
+		zellijBin := zellij.FindBin()
 
 		// Change to workspace directory
 		if err := os.Chdir(ws.Dir); err != nil {
@@ -47,7 +42,6 @@ var attachCmd = &cobra.Command{
 		env := ensureLocalBinInPath()
 
 		if zellij.SessionExists(session) {
-			// Attach to existing session
 			fmt.Printf("Attaching to existing session %q...\n", session)
 			return syscall.Exec(zellijBin, []string{"zellij", "attach", session}, env)
 		}
@@ -83,53 +77,6 @@ func ensureLocalBinInPath() []string {
 	}
 	// No PATH at all — set one
 	return append(env, "PATH="+localBin+":/usr/local/bin:/usr/bin:/bin")
-}
-
-func findZellij() (string, error) {
-	home, _ := os.UserHomeDir()
-
-	// Check common locations including user-local installs
-	paths := []string{
-		filepath.Join(home, ".local", "bin", "zellij"),
-		filepath.Join(home, ".cargo", "bin", "zellij"),
-		"/usr/local/bin/zellij",
-		"/usr/bin/zellij",
-	}
-
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	// Fall back to PATH lookup
-	pathEnv := os.Getenv("PATH")
-	if pathEnv != "" {
-		for _, dir := range splitPath(pathEnv) {
-			candidate := filepath.Join(dir, "zellij")
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("zellij not found — checked ~/.local/bin, ~/.cargo/bin, and PATH")
-}
-
-func splitPath(path string) []string {
-	if path == "" {
-		return nil
-	}
-	var result []string
-	start := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == ':' {
-			result = append(result, path[start:i])
-			start = i + 1
-		}
-	}
-	result = append(result, path[start:])
-	return result
 }
 
 func init() {
