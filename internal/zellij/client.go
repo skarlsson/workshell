@@ -49,7 +49,9 @@ func SessionExists(name string) bool {
 		return false
 	}
 	for _, s := range sessions {
-		if s == name {
+		// zellij list-sessions --short may include metadata after the name
+		// e.g. "ws-foo [Created ...] (EXITED)" — match on prefix
+		if s == name || strings.HasPrefix(s, name+" ") {
 			return true
 		}
 	}
