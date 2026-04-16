@@ -14,7 +14,9 @@ const defaultLayoutTemplate = `layout {
         plugin location="tab-bar"
     }
     pane split_direction="Vertical" {
-        pane size="60%" command="claude"
+        pane size="60%" command="claude" {
+            args "--effort" "max"
+        }
         pane split_direction="Horizontal" {
             pane name="build"
             pane name="shell"
